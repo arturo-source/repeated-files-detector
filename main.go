@@ -16,7 +16,7 @@ type fHashed struct {
 	hash [md5.Size]byte
 }
 
-func MD5AllFiles(directory string) (<-chan fHashed, <-chan error) {
+func MD5AllFiles(done <-chan struct{}, directory string) (<-chan fHashed, <-chan error) {
 	c := make(chan fHashed)
 	errc := make(chan error, 1)
 
@@ -35,11 +35,20 @@ func MD5AllFiles(directory string) (<-chan fHashed, <-chan error) {
 			wg.Add(1)
 			go func() {
 				data, err := os.ReadFile(path)
-				c <- fHashed{err, path, md5.Sum(data)}
+				select {
+				case c <- fHashed{err, path, md5.Sum(data)}:
+				case <-done:
+				}
 				wg.Done()
 			}()
 
-			return nil
+			// Abort the walk if done is closed.
+			select {
+			case <-done:
+				return errors.New("walk canceled")
+			default:
+				return nil
+			}
 		})
 
 		go func() {
@@ -63,7 +72,11 @@ func run() error {
 		return errors.New("directory must be provided using -d option")
 	}
 
-	hashes, errc := MD5AllFiles(directory)
+	// Necessary to terminate file hashing if the process is interrupted
+	done := make(chan struct{})
+	defer close(done)
+
+	hashes, errc := MD5AllFiles(done, directory)
 	if err := <-errc; err != nil {
 		return err
 	}
