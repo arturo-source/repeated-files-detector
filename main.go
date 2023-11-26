@@ -7,30 +7,48 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
-func MD5All(directory string) (map[string][md5.Size]byte, error) {
-	m := make(map[string][md5.Size]byte)
-	err := filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+type fHashed struct {
+	err  error
+	path string
+	hash [md5.Size]byte
+}
 
-		if !info.Mode().IsRegular() {
+func MD5AllFiles(directory string) (<-chan fHashed, <-chan error) {
+	c := make(chan fHashed)
+	errc := make(chan error, 1)
+
+	go func() {
+		var wg sync.WaitGroup
+
+		errc <- filepath.Walk(directory, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			wg.Add(1)
+			go func() {
+				data, err := os.ReadFile(path)
+				c <- fHashed{err, path, md5.Sum(data)}
+				wg.Done()
+			}()
+
 			return nil
-		}
+		})
 
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
+		go func() {
+			wg.Wait()
+			close(c)
+		}()
+	}()
 
-		m[path] = md5.Sum(data)
-		return nil
-
-	})
-
-	return m, err
+	return c, errc
 }
 
 func run() error {
@@ -45,8 +63,8 @@ func run() error {
 		return errors.New("directory must be provided using -d option")
 	}
 
-	hashes, err := MD5All(directory)
-	if err != nil {
+	hashes, errc := MD5AllFiles(directory)
+	if err := <-errc; err != nil {
 		return err
 	}
 
@@ -61,8 +79,12 @@ func run() error {
 		out = f
 	}
 
-	for k, v := range hashes {
-		fmt.Fprintf(out, "%s %x\n", k, v)
+	for fh := range hashes {
+		if fh.err != nil {
+			return fh.err
+		}
+
+		fmt.Fprintf(out, "%s %x\n", fh.path, fh.hash)
 	}
 
 	return nil
