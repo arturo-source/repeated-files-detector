@@ -17,7 +17,9 @@ type fHashed struct {
 	hash [md5.Size]byte
 }
 
+// allFilesRecursively receives a directory and returns a channel where all files (lower than 1GB) found are sent
 func allFilesRecursively(done <-chan struct{}, directory string) (<-chan string, <-chan error) {
+	const GB = 1 << 30
 	paths := make(chan string)
 	errc := make(chan error, 1)
 
@@ -30,6 +32,11 @@ func allFilesRecursively(done <-chan struct{}, directory string) (<-chan string,
 			}
 
 			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			if info.Size() > GB {
+				fmt.Fprintf(os.Stderr, "%s is bigger than 1GB (~%dGB). Will skip it.\n", path, info.Size()/GB)
 				return nil
 			}
 
@@ -46,6 +53,7 @@ func allFilesRecursively(done <-chan struct{}, directory string) (<-chan string,
 	return paths, errc
 }
 
+// createHashes receives `paths` channel that will be iterated, and `c` channel where will send file hashed
 func createHashes(done <-chan struct{}, paths <-chan string, c chan<- fHashed) {
 	for path := range paths {
 		data, err := os.ReadFile(path)
@@ -57,6 +65,11 @@ func createHashes(done <-chan struct{}, paths <-chan string, c chan<- fHashed) {
 	}
 }
 
+// MD5AllFiles executes concurrently:
+//
+// - Find all files recursively
+// - Calculate hash from each file
+// - ❌ Compare file hashes
 func MD5AllFiles(directory string, out io.Writer, n int) error {
 	// Necessary to terminate file hashing if the process is interrupted
 	done := make(chan struct{})
@@ -114,6 +127,7 @@ func run() error {
 		return errors.New("directory must be provided using -d option")
 	}
 
+	// use stdout if no file is chosen
 	out := os.Stdout
 	if outputFile != "" {
 		f, err := os.Create(outputFile)
