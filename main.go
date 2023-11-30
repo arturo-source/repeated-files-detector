@@ -53,30 +53,8 @@ func allFilesRecursively(done <-chan struct{}, directory string) (<-chan string,
 	return paths, errc
 }
 
-// createHashes receives `paths` channel that will be iterated, and `c` channel where will send file hashed
-func createHashes(done <-chan struct{}, paths <-chan string, c chan<- fHashed) {
-	for path := range paths {
-		data, err := os.ReadFile(path)
-		select {
-		case c <- fHashed{err, path, md5.Sum(data)}:
-		case <-done:
-			return
-		}
-	}
-}
-
-// MD5AllFiles executes concurrently:
-//
-// - Find all files recursively
-// - Calculate hash from each file
-// - ❌ Compare file hashes
-func MD5AllFiles(directory string, out io.Writer, n int) error {
-	// Necessary to terminate file hashing if the process is interrupted
-	done := make(chan struct{})
-	defer close(done)
-
-	paths, errc := allFilesRecursively(done, directory)
-
+// md5All calculates hash from each file concurrently
+func md5All(done <-chan struct{}, paths <-chan string, n int) <-chan fHashed {
 	// Add n goroutines hashing files
 	var wg sync.WaitGroup
 	wg.Add(n)
@@ -89,25 +67,53 @@ func MD5AllFiles(directory string, out io.Writer, n int) error {
 
 	for i := 0; i < n; i++ {
 		go func() {
-			createHashes(done, paths, hashes)
+			// send hash from each path read
+			for path := range paths {
+				data, err := os.ReadFile(path)
+				select {
+				case hashes <- fHashed{err, path, md5.Sum(data)}:
+				case <-done:
+					return
+				}
+			}
+
 			wg.Done()
 		}()
 	}
 
-	// Write file hashes
+	return hashes
+}
+
+type fRepeated struct {
+	mu       sync.Mutex
+	repeated map[[md5.Size]byte][]string
+}
+
+// append receives a fHashed and appends securely to repeated map (avoid race conditions)
+func (files *fRepeated) append(fh fHashed) {
+	files.mu.Lock()
+	defer files.mu.Unlock()
+	files.repeated[fh.hash] = append(files.repeated[fh.hash], fh.path)
+}
+
+// findRepeatedHashes writes the repeated file paths from hashes channel
+func findRepeatedHashes(out io.Writer, hashes <-chan fHashed) error {
+	fRep := fRepeated{
+		repeated: make(map[[md5.Size]byte][]string),
+	}
+
 	for fh := range hashes {
 		if fh.err != nil {
 			return fh.err
 		}
 
-		fmt.Fprintf(out, "%s %x\n", fh.path, fh.hash)
+		fRep.append(fh)
 	}
 
-	// be quiet!!
-	// if you place this code under `paths, errc := allFilesRecursively(done, directory)` it will produce a deadlock!
-	// because it will be locked reading `err := <-errc` and writing case paths <- path:
-	if err := <-errc; err != nil {
-		return err
+	for hash, files := range fRep.repeated {
+		if len(files) > 1 {
+			fmt.Fprintf(out, "%x (%d times) %s\n", hash, len(files), files)
+		}
 	}
 
 	return nil
@@ -139,7 +145,20 @@ func run() error {
 		out = f
 	}
 
-	return MD5AllFiles(directory, out, nGoroutines)
+	// Necessary to terminate goroutines if the process is interrupted
+	done := make(chan struct{})
+	defer close(done)
+
+	paths, errc := allFilesRecursively(done, directory)
+	hashesc := md5All(done, paths, nGoroutines)
+	err := findRepeatedHashes(out, hashesc)
+	if err != nil {
+		return err
+	}
+
+	// be quiet!!
+	// if you place `<-errc` (channel reading) before `paths<-` (other channel writing) it will produce a deadlock!
+	return <-errc
 }
 
 func main() {
