@@ -5,20 +5,20 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
 )
 
 type fHashed struct {
-	err  error
-	path string
-	hash [md5.Size]byte
+	err       error
+	path      string
+	directory string
+	hash      [md5.Size]byte
 }
 
-// allFilesRecursively receives a directory and returns a channel where all files (lower than 1GB) found are sent
-func allFilesRecursively(done <-chan struct{}, directory string) (<-chan string, <-chan error) {
+// getFilesRecursively receives a directory and returns a channel where all files (lower than 1GB) found are sent
+func getFilesRecursively(done <-chan struct{}, directory string) (<-chan string, <-chan error) {
 	const GB = 1 << 30
 	paths := make(chan string)
 	errc := make(chan error, 1)
@@ -53,70 +53,65 @@ func allFilesRecursively(done <-chan struct{}, directory string) (<-chan string,
 	return paths, errc
 }
 
-// md5All calculates hash from each file concurrently
-func md5All(done <-chan struct{}, paths <-chan string, n int) <-chan fHashed {
-	// Add n goroutines hashing files
+// executeGoroutines adds n goroutines and wait for them
+func executeGoroutines(mainFunc, closeFunc func(), n int) {
 	var wg sync.WaitGroup
 	wg.Add(n)
 
-	hashes := make(chan fHashed)
 	go func() {
 		wg.Wait()
-		close(hashes)
+		closeFunc()
 	}()
 
 	for i := 0; i < n; i++ {
 		go func() {
-			// send hash from each path read
-			for path := range paths {
-				data, err := os.ReadFile(path)
-				select {
-				case hashes <- fHashed{err, path, md5.Sum(data)}:
-				case <-done:
-					return
-				}
-			}
-
+			mainFunc()
 			wg.Done()
 		}()
 	}
+}
 
+// md5All calculates hash from each file concurrently
+func md5All(done <-chan struct{}, paths <-chan string, n int) <-chan fHashed {
+	hashes := make(chan fHashed)
+
+	mainFunc := func() {
+		// send hash from each path read
+		for path := range paths {
+			data, err := os.ReadFile(path)
+			select {
+			case hashes <- fHashed{
+				err:       err,
+				directory: filepath.Dir(path),
+				path:      path,
+				hash:      md5.Sum(data),
+			}:
+			case <-done:
+				return
+			}
+		}
+	}
+	closeFunc := func() {
+		close(hashes)
+	}
+
+	executeGoroutines(mainFunc, closeFunc, n)
 	return hashes
 }
 
-type fRepeated struct {
-	mu       sync.Mutex
-	repeated map[[md5.Size]byte][]string
-}
-
-// append receives a fHashed and appends securely to repeated map (avoid race conditions)
-func (files *fRepeated) append(fh fHashed) {
-	files.mu.Lock()
-	defer files.mu.Unlock()
-	files.repeated[fh.hash] = append(files.repeated[fh.hash], fh.path)
-}
-
-// findRepeatedHashes writes the repeated file paths from hashes channel
-func findRepeatedHashes(out io.Writer, hashes <-chan fHashed) error {
-	fRep := fRepeated{
-		repeated: make(map[[md5.Size]byte][]string),
-	}
+// groupByDirectory groups from hashes channel using directory as map key
+func groupByDirectory(hashes <-chan fHashed) (map[string][]*fHashed, error) {
+	sameDir := map[string][]*fHashed{}
 
 	for fh := range hashes {
 		if fh.err != nil {
-			return fh.err
+			return sameDir, fh.err
 		}
 
-		fRep.append(fh)
+		sameDir[fh.directory] = append(sameDir[fh.directory], &fh)
 	}
 
-	for hash, files := range fRep.repeated {
-		if len(files) > 1 {
-			fmt.Fprintf(out, "%x (%d times) %s\n", hash, len(files), files)
-		}
-	}
-
-	return nil
+	return sameDir, nil
 }
 
 func run() error {
@@ -149,11 +144,17 @@ func run() error {
 	done := make(chan struct{})
 	defer close(done)
 
-	paths, errc := allFilesRecursively(done, directory)
+	paths, errc := getFilesRecursively(done, directory)
 	hashesc := md5All(done, paths, nGoroutines)
-	err := findRepeatedHashes(out, hashesc)
+	filesByDirectory, err := groupByDirectory(hashesc)
 	if err != nil {
 		return err
+	}
+
+	for dir, files := range filesByDirectory {
+		if len(files) > 1 {
+			fmt.Fprintf(out, "%s has %d files\n", dir, len(files))
+		}
 	}
 
 	// be quiet!!
