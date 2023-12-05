@@ -100,18 +100,73 @@ func md5All(done <-chan struct{}, paths <-chan string, n int) <-chan fHashed {
 }
 
 // groupByDirectory groups from hashes channel using directory as map key
-func groupByDirectory(hashes <-chan fHashed) (map[string][]*fHashed, error) {
-	sameDir := map[string][]*fHashed{}
+func groupByDirectory(hashes <-chan fHashed) (map[string][]fHashed, error) {
+	sameDir := map[string][]fHashed{}
 
 	for fh := range hashes {
 		if fh.err != nil {
 			return sameDir, fh.err
 		}
 
-		sameDir[fh.directory] = append(sameDir[fh.directory], &fh)
+		sameDir[fh.directory] = append(sameDir[fh.directory], fh)
 	}
 
 	return sameDir, nil
+}
+
+type fRepeated struct {
+	dir1  []fHashed
+	dir2  []fHashed
+	count uint
+}
+
+// countRepeatedFiles counts how many files are repeated between all 2 different directories
+func countRepeatedFiles(done <-chan struct{}, filesByDirectory map[string][]fHashed, n int) <-chan fRepeated {
+	repeatedZero := make(chan fRepeated)
+	repeatedCounted := make(chan fRepeated)
+
+	mainFunc := func() {
+		for fr := range repeatedZero {
+			// compare both directories file hashes
+			for _, fh1 := range fr.dir1 {
+				for _, fh2 := range fr.dir2 {
+					if fh1.hash == fh2.hash {
+						fr.count++
+					}
+				}
+			}
+
+			select {
+			case repeatedCounted <- fr:
+			case <-done:
+				return
+			}
+		}
+	}
+	closeFunc := func() {
+		close(repeatedCounted)
+	}
+
+	executeGoroutines(mainFunc, closeFunc, n)
+
+	go func() {
+		// extract directories to use them as keys in the map
+		directories := make([]string, 0, len(filesByDirectory))
+		for dir := range filesByDirectory {
+			directories = append(directories, dir)
+		}
+
+		// send dir1 to compare with all dir2 (avoid comparing itself and the directories compared before)
+		for i, dir1 := range directories {
+			for _, dir2 := range directories[i+1:] {
+				repeatedZero <- fRepeated{filesByDirectory[dir1], filesByDirectory[dir2], 0}
+			}
+		}
+
+		close(repeatedZero)
+	}()
+
+	return repeatedCounted
 }
 
 func run() error {
@@ -151,9 +206,10 @@ func run() error {
 		return err
 	}
 
-	for dir, files := range filesByDirectory {
-		if len(files) > 1 {
-			fmt.Fprintf(out, "%s has %d files\n", dir, len(files))
+	repeatedc := countRepeatedFiles(done, filesByDirectory, nGoroutines)
+	for fr := range repeatedc {
+		if fr.count > 0 {
+			fmt.Fprintf(out, "%s and %s have %d repeated files\n", fr.dir1[0].directory, fr.dir2[0].directory, fr.count)
 		}
 	}
 
