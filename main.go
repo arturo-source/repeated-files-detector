@@ -114,40 +114,14 @@ func groupByDirectory(hashes <-chan fHashed) (map[string][]fHashed, error) {
 	return sameDir, nil
 }
 
-type fRepeated struct {
-	dir1  []fHashed
-	dir2  []fHashed
-	count uint
+type fToCompare struct {
+	files1 []fHashed
+	files2 []fHashed
 }
 
-// countRepeatedFiles counts how many files are repeated between all 2 different directories
-func countRepeatedFiles(done <-chan struct{}, filesByDirectory map[string][]fHashed, n int) <-chan fRepeated {
-	repeatedZero := make(chan fRepeated)
-	repeatedCounted := make(chan fRepeated)
-
-	mainFunc := func() {
-		for fr := range repeatedZero {
-			// compare both directories file hashes
-			for _, fh1 := range fr.dir1 {
-				for _, fh2 := range fr.dir2 {
-					if fh1.hash == fh2.hash {
-						fr.count++
-					}
-				}
-			}
-
-			select {
-			case repeatedCounted <- fr:
-			case <-done:
-				return
-			}
-		}
-	}
-	closeFunc := func() {
-		close(repeatedCounted)
-	}
-
-	executeGoroutines(mainFunc, closeFunc, n)
+// getDirectoriesToCompare makes all the combinations of two directories
+func getDirectoriesToCompare(done <-chan struct{}, filesByDirectory map[string][]fHashed) <-chan fToCompare {
+	repeated := make(chan fToCompare)
 
 	go func() {
 		// extract directories to use them as keys in the map
@@ -159,28 +133,76 @@ func countRepeatedFiles(done <-chan struct{}, filesByDirectory map[string][]fHas
 		// send dir1 to compare with all dir2 (avoid comparing itself and the directories compared before)
 		for i, dir1 := range directories {
 			for _, dir2 := range directories[i+1:] {
-				repeatedZero <- fRepeated{filesByDirectory[dir1], filesByDirectory[dir2], 0}
+				select {
+				case repeated <- fToCompare{filesByDirectory[dir1], filesByDirectory[dir2]}:
+				case <-done:
+					return
+				}
+
 			}
 		}
 
-		close(repeatedZero)
+		close(repeated)
 	}()
 
-	return repeatedCounted
+	return repeated
+}
+
+type fRepeated struct {
+	f1 fHashed
+	f2 fHashed
+}
+
+// countRepeatedFiles counts how many files are repeated between 2 different directories
+func countRepeatedFiles(done <-chan struct{}, f2c <-chan fToCompare, n int) [][]fRepeated {
+	repeatedMatrix := [][]fRepeated{}
+	repeatedArray := make(chan []fRepeated)
+
+	mainFunc := func() {
+		for c := range f2c {
+			// compare both directories file hashes
+			repeatedFiles := []fRepeated{}
+			for _, fh1 := range c.files1 {
+				for _, fh2 := range c.files2 {
+					if fh1.hash == fh2.hash {
+						repeatedFiles = append(repeatedFiles, fRepeated{fh1, fh2})
+					}
+				}
+			}
+
+			select {
+			case repeatedArray <- repeatedFiles:
+			case <-done:
+				return
+			}
+		}
+	}
+	closeFunc := func() {
+		close(repeatedArray)
+	}
+
+	executeGoroutines(mainFunc, closeFunc, n)
+
+	for arr := range repeatedArray {
+		repeatedMatrix = append(repeatedMatrix, arr)
+	}
+
+	return repeatedMatrix
 }
 
 func run() error {
 	var directory, outputFile string
-	var nGoroutines int
-	flag.StringVar(&directory, "d", "", "Directory to evaluate")
-	flag.StringVar(&outputFile, "o", "", "Name of the file to output the results (default output is stdout)")
+	var nGoroutines, nRepeated int
+	flag.StringVar(&directory, "directory", "", "Directory to evaluate")
+	flag.StringVar(&outputFile, "output", "", "Name of the file to output the results (default output is stdout)")
 	flag.IntVar(&nGoroutines, "threads", 8, "Number of goroutines running at the same time")
+	flag.IntVar(&nRepeated, "repeated", 1, "Minimum number of repeated files in two different directories")
 
 	flag.Parse()
 
 	if directory == "" {
 		flag.Usage()
-		return errors.New("directory must be provided using -d option")
+		return errors.New("directory must be provided")
 	}
 
 	// use stdout if no file is chosen
@@ -206,10 +228,14 @@ func run() error {
 		return err
 	}
 
-	repeatedc := countRepeatedFiles(done, filesByDirectory, nGoroutines)
-	for fr := range repeatedc {
-		if fr.count > 0 {
-			fmt.Fprintf(out, "%s and %s have %d repeated files\n", fr.dir1[0].directory, fr.dir2[0].directory, fr.count)
+	repeatedZero := getDirectoriesToCompare(done, filesByDirectory)
+	repeatedMatrix := countRepeatedFiles(done, repeatedZero, nGoroutines)
+	for _, repeatedArray := range repeatedMatrix {
+		if len(repeatedArray) >= nRepeated {
+			for _, repeated := range repeatedArray {
+				fmt.Fprintf(out, "%s == %s\n", repeated.f1.path, repeated.f2.path)
+			}
+			fmt.Fprintln(out)
 		}
 	}
 
