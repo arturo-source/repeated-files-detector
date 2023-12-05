@@ -12,7 +12,7 @@ go build .
 
 Then you can use it typing `./repeated-files-detector -help`, you'll get some help like this:
 
-```txt
+```text
 Usage of ./repeated-files-detector:
   -directory string
      Directory to evaluate (required)
@@ -26,9 +26,9 @@ Usage of ./repeated-files-detector:
 
 If I want to examine my `code` directory, where I store some projects, I should type something like `./repeated-files-detector -directory ~/code -repeated 3`. This command finds all repeated files recursively in the `code` directory, and shows only the directories which have 3 or more files repeated. For each directory-pair I get somethig like this:
 
-```txt
+```text
 +------------------------------------------------------------------+
-| ../rso-plugin/.git/hooks == ../repeated-files-detector/.git/hooks |
+| ../rso-plugin/.git/hooks == ../repeated-files-detector/.git/hooks|
 +------------------------------------------------------------------+
 |    applypatch-msg.sample == applypatch-msg.sample                |
 |        commit-msg.sample == commit-msg.sample                    |
