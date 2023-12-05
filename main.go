@@ -5,8 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -190,10 +192,54 @@ func countRepeatedFiles(done <-chan struct{}, f2c <-chan fToCompare, n int) [][]
 	return repeatedMatrix
 }
 
+func printRepeatedFiles(out io.Writer, repeatedMatrix [][]fRepeated, n int) {
+	biggestFilenameSize := func(bigestSize1, bigestSize2 int, frs []fRepeated) (int, int) {
+		for _, fr := range frs {
+			filename1, filename2 := filepath.Base(fr.f1.path), filepath.Base(fr.f2.path)
+
+			if len(filename1) > bigestSize1 {
+				bigestSize1 = len(filename1)
+			}
+			if len(filename2) > bigestSize2 {
+				bigestSize2 = len(filename2)
+			}
+		}
+
+		return bigestSize1, bigestSize2
+	}
+
+	printDividingLine := func(size1, size2 int) {
+		fmt.Fprintf(out, "+%s+\n", strings.Repeat("-", size1+size2+4))
+	}
+	printTwoFiles := func(size1, size2 int, path1, path2 string) {
+		fmt.Fprintf(out, "|%*s == %-*s|\n", size1, path1, size2, path2)
+	}
+
+	for _, repeatedArray := range repeatedMatrix {
+		if len(repeatedArray) < n {
+			continue
+		}
+
+		dir1, dir2 := repeatedArray[0].f1.directory, repeatedArray[0].f2.directory
+		size1, size2 := biggestFilenameSize(len(dir1), len(dir2), repeatedArray)
+
+		printDividingLine(size1, size2)
+		printTwoFiles(size1, size2, dir1, dir2)
+		printDividingLine(size1, size2)
+
+		for _, repeated := range repeatedArray {
+			filename1, filename2 := filepath.Base(repeated.f1.path), filepath.Base(repeated.f2.path)
+			printTwoFiles(size1, size2, filename1, filename2)
+		}
+
+		printDividingLine(size1, size2)
+	}
+}
+
 func run() error {
 	var directory, outputFile string
 	var nGoroutines, nRepeated int
-	flag.StringVar(&directory, "directory", "", "Directory to evaluate")
+	flag.StringVar(&directory, "directory", "", "Directory to evaluate (required)")
 	flag.StringVar(&outputFile, "output", "", "Name of the file to output the results (default output is stdout)")
 	flag.IntVar(&nGoroutines, "threads", 8, "Number of goroutines running at the same time")
 	flag.IntVar(&nRepeated, "repeated", 1, "Minimum number of repeated files in two different directories")
@@ -230,14 +276,7 @@ func run() error {
 
 	repeatedZero := getDirectoriesToCompare(done, filesByDirectory)
 	repeatedMatrix := countRepeatedFiles(done, repeatedZero, nGoroutines)
-	for _, repeatedArray := range repeatedMatrix {
-		if len(repeatedArray) >= nRepeated {
-			for _, repeated := range repeatedArray {
-				fmt.Fprintf(out, "%s == %s\n", repeated.f1.path, repeated.f2.path)
-			}
-			fmt.Fprintln(out)
-		}
-	}
+	printRepeatedFiles(out, repeatedMatrix, nRepeated)
 
 	// be quiet!!
 	// if you place `<-errc` (channel reading) before `paths<-` (other channel writing) it will produce a deadlock!
