@@ -131,6 +131,8 @@ func getDirectoriesToCompare(done <-chan struct{}, filesByDirectory map[string][
 	repeated := make(chan fToCompare)
 
 	go func() {
+		defer close(repeated)
+
 		// extract directories to use them as keys in the map
 		directories := make([]string, 0, len(filesByDirectory))
 		for dir := range filesByDirectory {
@@ -148,8 +150,6 @@ func getDirectoriesToCompare(done <-chan struct{}, filesByDirectory map[string][
 
 			}
 		}
-
-		close(repeated)
 	}()
 
 	return repeated
