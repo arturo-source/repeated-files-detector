@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
@@ -20,7 +21,7 @@ type fHashed struct {
 }
 
 // getFilesRecursively receives a directory and returns a channel where all files (lower than 1GB) found are sent
-func getFilesRecursively(done <-chan struct{}, directory string) (<-chan string, <-chan error) {
+func getFilesRecursively(done <-chan struct{}, directory string, reg *regexp.Regexp) (<-chan string, <-chan error) {
 	const GB = 1 << 30
 	paths := make(chan string)
 	errc := make(chan error, 1)
@@ -34,6 +35,10 @@ func getFilesRecursively(done <-chan struct{}, directory string) (<-chan string,
 			}
 
 			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			if reg != nil && reg.MatchString(path) {
 				return nil
 			}
 
@@ -192,6 +197,7 @@ func countRepeatedFiles(done <-chan struct{}, f2c <-chan fToCompare, n int) [][]
 	return repeatedMatrix
 }
 
+// printRepeatedFiles writes each folder (with more than n repeated files) into out writer
 func printRepeatedFiles(out io.Writer, repeatedMatrix [][]fRepeated, n int) {
 	biggestFilenameSize := func(bigestSize1, bigestSize2 int, frs []fRepeated) (int, int) {
 		for _, fr := range frs {
@@ -237,10 +243,11 @@ func printRepeatedFiles(out io.Writer, repeatedMatrix [][]fRepeated, n int) {
 }
 
 func run() error {
-	var directory, outputFile string
+	var directory, outputFile, avoidDirs string
 	var nGoroutines, nRepeated int
 	flag.StringVar(&directory, "directory", "", "Directory to evaluate (required)")
 	flag.StringVar(&outputFile, "output", "", "Name of the file to output the results (default output is stdout)")
+	flag.StringVar(&avoidDirs, "avoid", "", "Regex used to avoid evaluating matching directories")
 	flag.IntVar(&nGoroutines, "threads", 8, "Number of goroutines running at the same time")
 	flag.IntVar(&nRepeated, "repeated", 1, "Minimum number of repeated files in two different directories")
 
@@ -263,11 +270,21 @@ func run() error {
 		out = f
 	}
 
+	var reg *regexp.Regexp
+	if avoidDirs != "" {
+		r, err := regexp.Compile(avoidDirs)
+		if err != nil {
+			return err
+		}
+
+		reg = r
+	}
+
 	// Necessary to terminate goroutines if the process is interrupted
 	done := make(chan struct{})
 	defer close(done)
 
-	paths, errc := getFilesRecursively(done, directory)
+	paths, errc := getFilesRecursively(done, directory, reg)
 	hashesc := md5All(done, paths, nGoroutines)
 	filesByDirectory, err := groupByDirectory(hashesc)
 	if err != nil {

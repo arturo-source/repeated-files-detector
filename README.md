@@ -14,6 +14,8 @@ Then you can use it typing `./repeated-files-detector -help`, you'll get some he
 
 ```text
 Usage of ./repeated-files-detector:
+  -avoid string
+     Regex used to avoid evaluating matching directories
   -directory string
      Directory to evaluate (required)
   -output string
