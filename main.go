@@ -20,11 +20,13 @@ var (
 )
 
 func init() {
+	// init uints to avoid repeating "B", "KB", ...
 	for i, unit := range validUnits {
 		units[unit] = 1 << (10 * i)
 	}
 }
 
+// parseToBytes receives user input and tranforms it into bytes
 func parseToBytes(size string) (int64, error) {
 	isNumber := func(num rune) bool {
 		return num >= '0' && num <= '9'
@@ -51,7 +53,7 @@ func parseToBytes(size string) (int64, error) {
 	unit := size[len(number):]
 	unit = strings.ToUpper(unit)
 	if _, exist := units[unit]; !exist {
-		return 0, fmt.Errorf("%s is not a valid unit %s", unit, validUnits)
+		return 0, fmt.Errorf("[%s] is not a valid unit %s", unit, validUnits)
 	}
 
 	return int64(numberInt) * units[unit], nil
