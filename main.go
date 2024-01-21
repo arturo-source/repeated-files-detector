@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	units      = map[string]int{}
+	units      = map[string]int64{}
 	validUnits = []string{"B", "KB", "MB", "GB", "TB", "PB", "EB"}
 )
 
@@ -25,7 +25,7 @@ func init() {
 	}
 }
 
-func parseToBytes(size string) (int, error) {
+func parseToBytes(size string) (int64, error) {
 	isNumber := func(num rune) bool {
 		return num >= '0' && num <= '9'
 	}
@@ -54,7 +54,7 @@ func parseToBytes(size string) (int, error) {
 		return 0, fmt.Errorf("%s is not a valid unit %s", unit, validUnits)
 	}
 
-	return numberInt * units[unit], nil
+	return int64(numberInt) * units[unit], nil
 }
 
 type fHashed struct {
@@ -64,9 +64,8 @@ type fHashed struct {
 	hash      [md5.Size]byte
 }
 
-// getFilesRecursively receives a directory and returns a channel where all files (lower than 1GB) found are sent
-func getFilesRecursively(done <-chan struct{}, directory string, reg *regexp.Regexp) (<-chan string, <-chan error) {
-	GB := int64(units["GB"])
+// getFilesRecursively receives a directory and returns a channel where all files found are sent
+func getFilesRecursively(done <-chan struct{}, directory string, reg *regexp.Regexp, minSize, maxSize int64) (<-chan string, <-chan error) {
 	paths := make(chan string)
 	errc := make(chan error, 1)
 
@@ -86,8 +85,9 @@ func getFilesRecursively(done <-chan struct{}, directory string, reg *regexp.Reg
 				return nil
 			}
 
-			if info.Size() > GB {
-				fmt.Fprintf(os.Stderr, "%s is bigger than 1GB (~%dGB). Will skip it.\n", path, info.Size()/GB)
+			fileSize := info.Size()
+			if fileSize < minSize || fileSize > maxSize {
+				fmt.Fprintf(os.Stderr, "%s (%dB) is out of bounds (%dB - %dB). Will skip it.\n", path, fileSize, minSize, maxSize)
 				return nil
 			}
 
@@ -289,17 +289,30 @@ func printRepeatedFiles(out io.Writer, repeatedMatrix [][]fRepeated, n int) {
 func run() error {
 	var directory, outputFile, avoidDirs string
 	var nGoroutines, nRepeated int
+	var minStr, maxStr string
 	flag.StringVar(&directory, "directory", "", "Directory to evaluate (required)")
 	flag.StringVar(&outputFile, "output", "", "Name of the file to output the results (default output is stdout)")
 	flag.StringVar(&avoidDirs, "avoid", "", "Regex used to avoid evaluating matching directories")
 	flag.IntVar(&nGoroutines, "threads", 8, "Number of goroutines running at the same time")
 	flag.IntVar(&nRepeated, "repeated", 1, "Minimum number of repeated files in two different directories")
+	flag.StringVar(&minStr, "min", "0B", "Minimum file size to analize")
+	flag.StringVar(&maxStr, "max", "1GB", "Maximum file size to analize")
 
 	flag.Parse()
 
 	if directory == "" {
 		flag.Usage()
 		return errors.New("directory must be provided")
+	}
+
+	minSize, err := parseToBytes(minStr)
+	if err != nil {
+		return err
+	}
+
+	maxSize, err := parseToBytes(maxStr)
+	if err != nil {
+		return err
 	}
 
 	// use stdout if no file is chosen
@@ -328,7 +341,7 @@ func run() error {
 	done := make(chan struct{})
 	defer close(done)
 
-	paths, errc := getFilesRecursively(done, directory, reg)
+	paths, errc := getFilesRecursively(done, directory, reg, minSize, maxSize)
 	hashesc := md5All(done, paths, nGoroutines)
 	filesByDirectory, err := groupByDirectory(hashesc)
 	if err != nil {
