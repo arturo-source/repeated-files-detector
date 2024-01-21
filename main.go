@@ -13,6 +13,17 @@ import (
 	"sync"
 )
 
+var (
+	units      map[string]int
+	validUnits = []string{"B", "KB", "MB", "GB", "TB", "PB", "EB"}
+)
+
+func init() {
+	for i, unit := range validUnits {
+		units[unit] = 1 << (10 * i)
+	}
+}
+
 type fHashed struct {
 	err       error
 	path      string
@@ -22,7 +33,7 @@ type fHashed struct {
 
 // getFilesRecursively receives a directory and returns a channel where all files (lower than 1GB) found are sent
 func getFilesRecursively(done <-chan struct{}, directory string, reg *regexp.Regexp) (<-chan string, <-chan error) {
-	const GB = 1 << 30
+	GB := int64(units["GB"])
 	paths := make(chan string)
 	errc := make(chan error, 1)
 
