@@ -18,6 +18,10 @@ Usage of ./repeated-files-detector:
      Regex used to avoid evaluating matching directories
   -directory string
      Directory to evaluate (required)
+  -max string
+     Maximum file size to analize (default "1GB")
+  -min string
+     Minimum file size to analize (default "0B")
   -output string
      Name of the file to output the results (default output is stdout)
   -repeated int
