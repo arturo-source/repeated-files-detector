@@ -9,12 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 )
 
 var (
-	units      map[string]int
+	units      = map[string]int{}
 	validUnits = []string{"B", "KB", "MB", "GB", "TB", "PB", "EB"}
 )
 
@@ -22,6 +23,38 @@ func init() {
 	for i, unit := range validUnits {
 		units[unit] = 1 << (10 * i)
 	}
+}
+
+func parseToBytes(size string) (int, error) {
+	isNumber := func(num rune) bool {
+		return num >= '0' && num <= '9'
+	}
+
+	var number string
+	for _, num := range size {
+		if !isNumber(num) {
+			break
+		}
+
+		number += string(num)
+	}
+
+	if len(number) == 0 {
+		return 0, fmt.Errorf("%s at least, first character should be a number", size)
+	}
+
+	numberInt, err := strconv.Atoi(number)
+	if err != nil {
+		return 0, err
+	}
+
+	unit := size[len(number):]
+	unit = strings.ToUpper(unit)
+	if _, exist := units[unit]; !exist {
+		return 0, fmt.Errorf("%s is not a valid unit %s", unit, validUnits)
+	}
+
+	return numberInt * units[unit], nil
 }
 
 type fHashed struct {
